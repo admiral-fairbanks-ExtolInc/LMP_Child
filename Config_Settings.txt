@@ -1,0 +1,7 @@
+[LMP_Type = 1]
+[Num_Heaters = 4]
+[Max_Flash_Cycles = 2]
+[Heater_Setpoint[0] = 500]
+[Heater_Setpoint[1] = 500]
+[Heater_Setpoint[2] = 500]
+[Heater_Setpoint[3] = 500]

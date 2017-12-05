@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+<meta charset="UTF-8" />
+<title>Arduino Test</title>
+<style>
+    body { font-family: Arial; font-size:14px; line-height:20px; padding:30px; background: #f1f1f1}
+</style>
+<script type="text/javascript">
+function ajaxRequest() {
+    var xmlhttp;
+
+    if (window.XMLHttpRequest) {
+        xmlhttp = new XMLHttpRequest();
+    } else {
+        xmlhttp = new ActiveXObject("Microsoft.XMLHTTP");
+    }
+    xmlhttp.onreadystatechange = function() {
+        if (xmlhttp.readyState == 4 && xmlhttp.status == 200) {
+            document.getElementById("val1").innerHTML = xmlhttp.responseText;
+        }
+    }
+
+    xmlhttp.open("GET", "http://192.168.90.221/?data=val1", true);
+    xmlhttp.send();
+}
+</script>
+</head>
+<body onload="ajaxRequest();">
+    <h1>Hello from Hackshed!</h1>
+    <p>Welcome to your Arduino webpage.</p>
+    <br />
+    <p>Test Value is: <span id="val1"></span></p>
+</body>
+</html>
