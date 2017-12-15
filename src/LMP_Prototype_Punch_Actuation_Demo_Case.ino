@@ -22,9 +22,9 @@
 
 // Constant Variables
 const uint8_t i2cAddress = 0x05;
-const uint8_t heaterPowerPinArray[4] = {10, 11, 12, 13};
+const uint8_t heaterPowerPinArray[4] = {6, 9, 10, 11};
 const uint8_t numHeaters = 1;
-const uint8_t punchFullStrokePinArray[4] = {6, 7, 8, 9};
+const uint8_t punchFullStrokePinArray[4] = {0, 0, 0, 0};
 const uint8_t pulsePeriod = 49;
 const uint8_t punchExtendPin[4] = {2, 3, 4, 5};
 const uint8_t systemTimebaseUs = 5000;
@@ -44,13 +44,29 @@ uint16_t j;
 uint16_t k;
 uint16_t maxFlashCycles = 2;
 uint16_t numFaultMessages = 15;
-uint16_t heaterHiLim = 600;
+
 uint16_t releaseHyst = 5;
 uint16_t lastTempReading = 0;
 uint16_t releaseTemp = 125;
 uint16_t meltTempHyst = 10;
 uint16_t heaterRtdAnalogSig[numHeaters] = {};
 uint16_t rtdAmbientAn[numHeaters] = {};
+uint16_t currentCycleTime;
+uint16_t flashTime = 1000;
+uint16_t heatersOnTime;
+uint16_t cycleCompleteTime;
+uint16_t fullStrokeTime[numHeaters] = {};
+uint16_t heaterPeakTempTime[numHeaters] = {};
+uint16_t heaterRetractedTime[numHeaters] = {};
+uint16_t maxHeaterOnTime = 20000;
+uint16_t maxOverallCycleTime = 30000;
+uint16_t pulloffTime = 2000;
+uint16_t meltTempReachedTime[numHeaters] = {};
+uint16_t lastLcdRefreshTime;
+uint16_t flashCycleReleaseTime;
+uint16_t flashCycleStartTime;
+uint16_t heaterContactDipTime[numHeaters];
+uint16_t heaterReleaseTime;
 
 int heaterPeakTemp[numHeaters] = {};
 int currentFlashCycle = 1;
@@ -62,8 +78,9 @@ unsigned long heartbeatPulseCounter;
 unsigned long currentSnapshot;
 unsigned long lastSnapshot;
 
-volatile bool resetSystemTimerCntr;
-
+bool setpointFlag;
+bool setpointCheck = false;
+bool resetSystemTimerCntr;
 bool resetTimer;
 bool atMeltTemp[numHeaters] = {};
 bool allAtMeltTemp;
@@ -77,12 +94,12 @@ bool fltCoolingAirActive;
 bool fltsPresent;
 bool fltResetSig;
 bool heatEnable;
-bool lmpActuation;
+bool lmpActuation = false;
 bool heatersRdyForRelease[numHeaters] = {};
 bool calibrateRtd;
 bool cycleDataLogged;
 bool msecOneshot;
-bool pressFullStrokeReached;
+bool pressFullStrokeReached = false;
 bool punchFullStrokeSig[numHeaters] = {};
 bool processFlags[20] = {};
 bool punchExtend[numHeaters] = {};
@@ -99,41 +116,23 @@ bool setpointIncreased;
 bool setpointDecreased;
 bool sendMappingData;
 bool inputsFromParent[5];
-bool statusArray[8] = {false, false, cycleActive, allAtMeltTemp,
-  allHeatersReadyRelease, fltsPresent, cycleDataLogged};
 bool sendTempData;
 bool sendDatalog;
 
-double currentCycleTime;
-double cycleCompleteTime;
-double flashTime = 1.0;
-double fullStrokeTime[numHeaters] = {};
-double heatersOnTime;
-double heaterPeakTempTime[numHeaters] = {};
-double heaterRetractedTime[numHeaters] = {};
 double heaterRtdReading[numHeaters] = {};
-double heaterReleaseTime;
-double heaterMeltTemp = 500;
+double heaterMeltTemp = 550;
 double heaterTempAtRelease[numHeaters] = {};
 double heaterTempAtShutoff[numHeaters] = {};
 double heaterTemp[numHeaters] = {};
-double maxHeaterOnTime = 20;
-double maxOverallCycleTime = 30;
-double puloffTime = 2.0;
-double meltTempReachedTime[numHeaters] = {};
-double lastLcdRefreshTime;
 double heaterOnDutyArray[numHeaters] = {};
-double pidOutputMax = 50;
+double pidOutputMax = 255;
 double pidSampleTime = 50;
-double flashCycleReleaseTime;
-double flashCycleStartTime;
 double heaterStartTemp[numHeaters];
 double heaterContactDipMin[numHeaters];
-double heaterContactDipTime[numHeaters];
 double cycleCompleteTemp[numHeaters];
 double atSetpointTemp[numHeaters];
-
-const char *cycleCodes[3]; // Initialized as "CI," or Cycle Inactive
+double heaterHiLim = 1000;
+double heaterPwmArray[numHeaters] = {};
 
 byte statusByte;
 byte startTimeHb;
@@ -168,26 +167,23 @@ byte cycleCompletePosHb[numHeaters];
 byte cycleCompletePosLb[numHeaters];
 
 // Define PID Controllers
-PID heater1PID (&heaterTemp[0], &heaterOnDutyArray[0], &heaterMeltTemp, 15, 3, 0, DIRECT);
-PID heater2PID (&heaterTemp[1], &heaterOnDutyArray[1], &heaterMeltTemp, 15, 3, 0, DIRECT);
-PID heater3PID (&heaterTemp[2], &heaterOnDutyArray[2], &heaterMeltTemp, 15, 3, 0, DIRECT);
-PID heater4PID (&heaterTemp[3], &heaterOnDutyArray[3], &heaterMeltTemp, 15, 3, 0, DIRECT);
+PID heater1PID (&heaterTemp[0], &heaterOnDutyArray[0], &heaterMeltTemp, 5, 0, 0, DIRECT);
+//PID heater2PID (&heaterTemp[1], &heaterOnDutyArray[1], &heaterMeltTemp, 15, 3, 0, DIRECT);
+//PID heater3PID (&heaterTemp[2], &heaterOnDutyArray[2], &heaterMeltTemp, 15, 3, 0, DIRECT);
+//PID heater4PID (&heaterTemp[3], &heaterOnDutyArray[3], &heaterMeltTemp, 15, 3, 0, DIRECT);
 
 // End Variable Definition
 
 // Setup Function
 void setup() {
   // Start Timers
-  Timer1.initialize(500);
-  Timer1.attachInterrupt(Heater_Duty); // Run Heater Duty interrupt every msec
-
   FlexiTimer2::set(50, PID_Heater_Control);
   FlexiTimer2::start();
   // End Timers Start
 
   //fill default RTD ambient analog values
   //equation is Aamb = Afs*Ramb/(Rref+Ramb)
-  Fill_With(rtdAmbientAn, numHeaters, (uint16_t)488); //default value
+  fillWith(rtdAmbientAn, numHeaters, (uint16_t)306); //default value
 
   // Start Serial
   Serial.begin(115200);
@@ -207,7 +203,7 @@ void setup() {
     }
   }
 
-  if (!lmpActuation) Fill_With(punchFullStrokeSig, numHeaters, true); // Force this true if no punch actuation
+  if (!lmpActuation) fillWith(punchFullStrokeSig, numHeaters, true); // Force this true if no punch actuation
   for (j = 0; j < numHeaters; j++) {pinMode(heaterPowerPinArray[j], OUTPUT);} // Sets up outputs for Heater Power
   // End of I/O Initialization
 
@@ -215,9 +211,9 @@ void setup() {
 
   // PID Setup
   heater1PID.SetOutputLimits(0, pidOutputMax), heater1PID.SetMode(AUTOMATIC), heater1PID.SetSampleTime(pidSampleTime);
-  heater2PID.SetOutputLimits(0, pidOutputMax), heater2PID.SetMode(AUTOMATIC), heater2PID.SetSampleTime(pidSampleTime);
-  heater3PID.SetOutputLimits(0, pidOutputMax), heater3PID.SetMode(AUTOMATIC), heater3PID.SetSampleTime(pidSampleTime);
-  heater4PID.SetOutputLimits(0, pidOutputMax), heater4PID.SetMode(AUTOMATIC), heater4PID.SetSampleTime(pidSampleTime);
+  //heater2PID.SetOutputLimits(0, pidOutputMax), heater2PID.SetMode(AUTOMATIC), heater2PID.SetSampleTime(pidSampleTime);
+  ///heater3PID.SetOutputLimits(0, pidOutputMax), heater3PID.SetMode(AUTOMATIC), heater3PID.SetSampleTime(pidSampleTime);
+  //heater4PID.SetOutputLimits(0, pidOutputMax), heater4PID.SetMode(AUTOMATIC), heater4PID.SetSampleTime(pidSampleTime);
   // End of PID Setup
 } // End of Setup Loop
 
@@ -227,20 +223,24 @@ void loop() {
   systemTimer();
 
   // Read Inputs
-  inputsFromParent[0] = startSignal;
-  inputsFromParent[1] = cycleStopSignal;
-  inputsFromParent[2] = pressFullStrokeReached;
-  inputsFromParent[3] = sendDatalog;
+  if (inputsFromParent[0]) startSignal = true;
+  else if (!inputsFromParent[0]) startSignal = false;
+  if (inputsFromParent[1]) cycleStopSignal = true;
+  else if (!inputsFromParent[1]) cycleStopSignal = false;
+  if (inputsFromParent[2]) pressFullStrokeReached = true;
+  else if (!inputsFromParent[2]) pressFullStrokeReached = false;
+  if (inputsFromParent[3]) sendDatalog = true;
+  else if (!inputsFromParent[3]) sendDatalog = false;
 
   // Reads heater temps and monitors punch full-stroke status
   punchesAtFullStroke = true;
   for (j = 0; j < numHeaters; j++) {
-    heaterRtdAnalogSig[j] = analogRead(54 + j);
-    heaterTemp[j] = RTD_Temp_Conversion(heaterRtdAnalogSig[j], rtdAmbientAn[j]);
+    heaterRtdAnalogSig[j] = analogRead(14 + j);
+    heaterTemp[j] = rtdTempConversion(heaterRtdAnalogSig[j], rtdAmbientAn[j]);
 
     if (heaterTemp[j] > heaterPeakTemp[j]) { // Tracks peak temp and timestamp for each heater
       heaterPeakTemp[j] = heaterTemp[j];
-      heaterPeakTempTime[j] = currentCycleTime;
+      //heaterPeakTempTime[j] = currentCycleTime;
     }
 
     if (lmpActuation) { // Tracks punch full stroke signals if punch actuation
@@ -258,11 +258,13 @@ void loop() {
   // End Fault Handling
 
   //Calibrate RTD
+  /*
   if (calibrateRtd) {
     for (j = 0; j < numHeaters; j++) {
       rtdAmbientAn[j] = heaterRtdAnalogSig[j];
     }
   }
+  */
 
   // Before entering into loop, check program time. If total cycle time exceeds max allowable, abort cycle and flag fault
 
@@ -271,10 +273,6 @@ void loop() {
     faultsActiveArray[13] = true;
     cycleActive = false;
   }
-
-  // If cycle is inactive and no faults are present and no cycle has been completed,
-  // tell LCD "CI" or Cycle Inactive.
-  if (!cycleActive && !fltsPresent && !cycleComplete) cycleCodes[0] = "CI";
 
   /*
   * If the start signal is given, Cycle is not active, and there are no active faults,
@@ -290,7 +288,6 @@ void loop() {
     resetSystemTimerCntr = true; // Reset cycle timer
     cycleActive = true; // Starts cycle
     heatEnable = true; // Starts heat
-    cycleCodes[0] = "CS";
     Serial.print("Cycle Start");
   }
 
@@ -303,13 +300,12 @@ void loop() {
   * Flag heater start time and monitor for when heaters reach setpoint.
   */
   if (heatEnable) {
+
     if (!processFlags[1]) {
       heatersOnTime = currentCycleTime; // Captures cycle time at which at least one heater first turns on.
       for (j = 0; j < numHeaters; j++) heaterStartTemp[j] = heaterTemp[j];
       processFlags[1] = true; // Functions as a one-shot to ensure that Heaters_On-Time is only captured once.
     }
-
-    allAtMeltTemp = true;
 
     for (k = 0; k < numHeaters; k++) {
       if (heaterTemp[k] > heaterHiLim) { // If any heater exceeds hi-lim, exit cycle and trigger fault.
@@ -317,15 +313,23 @@ void loop() {
         fltsPresent = true;
         faultsActiveArray[numHeaters + k] = true;
         cycleActive = false;
+        Serial.print("too hot ");
+        Serial.print(heaterTemp[0]);
+        Serial.print(" ");
+        Serial.print(heaterRtdAnalogSig[0]);
       }
 
       // When a heater reaches setpoint, flag it and capture time
-      else if (!fltsPresent && (heaterTemp[k] > heaterMeltTemp - meltTempHyst)/* &&
-      (heaterTemp[k] < heaterMeltTemp + meltTempHyst)*/ && !atMeltTemp[k]) {
+      else if (!fltsPresent && (heaterTemp[k] > heaterMeltTemp) && !atMeltTemp[k]) {
+        Serial.print(" I happened ");
         atMeltTemp[k] = true;
+        setpointFlag = true;
         atSetpointTemp[k] = heaterTemp[k];
         meltTempReachedTime[k] = currentCycleTime; // Captures the first cycle time at which all heaters are within setpoint window.
+        if(setpointFlag && k == numHeaters-1) allAtMeltTemp = true;
       }
+
+      else setpointFlag = false;
 
       if (!atMeltTemp[k]) allAtMeltTemp = false;
     }
@@ -339,8 +343,7 @@ void loop() {
     }
     // When all heaters are at setpoint, extend press.
     if (allAtMeltTemp && !processFlags[2]) {
-      cycleCodes[0] = "AS"; // "At Setpoint"
-      Serial.print('At Setpoint');
+      Serial.print("At Setpoint");
       extendPress = true;
       processFlags[2] = true;
     }
@@ -373,8 +376,7 @@ void loop() {
       heaterTempAtShutoff[j] = heaterTemp[j];
       atMeltTemp[j] = false;
       processFlags[3 + j] = true;
-      cycleCodes[0] = "FS";
-      Serial.print('At Full Stroke');
+      Serial.print("At Full Stroke");
     }
   // If all heaters are at full stroke (press/punch) disable heat and turn on cooling air.
     if (pressFullStrokeReached && punchFullStrokeSig[j] && !processFlags[7]) {
@@ -382,14 +384,13 @@ void loop() {
         heatEnable = false;
         //coolingAirEnable = true;
         processFlags[7] = true;
-        cycleCodes[0] = "CA";
-        Serial.print('Cooling Air On');
+        Serial.print("Cooling Air On");
       }
     }
   }
 
   /*
-  * When cooling air is enabled, heaters are off, and full stroke is reached, compare each heater's
+  * When cooling air is enabled, heaters are off, and full stroke is reached, compare each heater"s
   * temperature vs. the release temp. When each heater reaches release temp, flag it as ready for release.
   * When all heaters are ready for release, if no actuation, tell press to retract.
   * If punch actuation, instead tell all punches to retract.
@@ -407,15 +408,14 @@ void loop() {
       heaterReleaseTime = currentCycleTime;
       //coolingAirEnable = false;
       if (!lmpActuation) {extendPress = false;}
-      if (lmpActuation) {Fill_With(punchExtend, numHeaters, false);}
+      if (lmpActuation) {fillWith(punchExtend, numHeaters, false);}
       processFlags[8] = true;
-      cycleCodes[0] = "AR";
-      Serial.print('At Release');
+      Serial.print("At Release");
     }
   }
 
   // Check to see if punch/press has released correctly.
-  if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime < puloffTime)) {
+  if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime < pulloffTime)) {
     for (j = 0; j < numHeaters; j++) { // This loop checks for valid heater release. When valid release is obtained, flag time and heater temp.
       if (((lmpActuation && !punchFullStrokeSig[j]) ||
       (!lmpActuation && !pressFullStrokeReached)) && !processFlags[9 + j]) {
@@ -432,17 +432,16 @@ void loop() {
       cycleActive = false;
       extendPress = false;
       processFlags[13] = true;
-      cycleCodes[0] = "CC";
-      Serial.print('Cycle Complete');
+      Serial.print("Cycle Complete");
     }
   }
 
   // If we do not obtain a valid release, enter flash cycle
-  else if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime >= puloffTime) && cycleActive && maxFlashCycles != 0) {
+  else if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime >= pulloffTime) && cycleActive && maxFlashCycles != 0) {
     flashCycle();
   }
   // If max flash cycles are 0, flash cycle is disabled. If we do not get valid release on first attempt, flag fault and exit cycle.
-  else if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime >= puloffTime) && !processFlags[13] && maxFlashCycles == 0) {
+  else if (allHeatersReadyRelease && (currentCycleTime - heaterReleaseTime >= pulloffTime) && !processFlags[13] && maxFlashCycles == 0) {
     fltsPresent = true;  // punches/press, flag fault and abort cycle.
     faultsActiveArray[14] = true;
     cycleActive = false;
@@ -466,6 +465,10 @@ void loop() {
       digitalWrite(punchExtendPin[j], punchExtend[j]);
     }
   }
+
+  for (j = 0; j < numHeaters; j++) {
+    analogWrite(heaterPowerPinArray[j], (int)heaterOnDutyArray[j]);
+  }
 }
 // End of main loop
 
@@ -488,19 +491,9 @@ void systemTimer() {
 
 }
 
-void triggerRead() {
-  beginRead = true;
-}
-
-void triggerWrite() {
-  beginWrite = true;
-}
-
-int index;
-
 void readData() {
-  Serial.print("msg rcvd");
   int l = Wire.available();
+  int index;
   char receivedBuffer[l + 1];
   byte sentBuffer[4];
   while (Wire.available()) {
@@ -509,12 +502,12 @@ void readData() {
   }
   if (!Wire.available()) { index = 0; }
   if (l == 4) {
+
     for (j = 0; j < l; j++){
       inputsFromParent[j] = (bool)receivedBuffer[j];
     }
   }
   else if (l == 1) {
-    Serial.print("mapping request rcvd");
     sendMappingData = true;
   }
   else {
@@ -523,22 +516,21 @@ void readData() {
 }
 
 void writeData() {
-  Serial.print("sending data");
+  bool statusArray[8] = {cycleActive, allAtMeltTemp, allHeatersReadyRelease,
+    cycleComplete, fltsPresent, cycleDataLogged, afi, afi};
   if (sendMappingData) {
-    byte sentBuffer[4] = {1, 1, 1, 1};
-    char msg[5] = "hello";
+    char sentBuffer[4] = "0000";
     //for (j = 0; j < 4; j++) {sentBuffer[j] = lmpTypes[j];}
     sendMappingData = false;
-    Wire.write(msg, 5);
-    Serial.print("mapping request sent");
+    Wire.write(sentBuffer, 4);
   }
   else {
     if (!sendDatalog){
       byte sentBuffer[1 + 2*numHeaters];
       sentBuffer[0] = boolArrayToByte(statusArray);
       for (j = 0; j < numHeaters; j++) {
-        sentBuffer[1+2*j] = highByte((int16_t)heaterTemp[j]);
-        sentBuffer[2+2*j] = lowByte((int16_t)heaterTemp[j]);
+        sentBuffer[1+2*j] = highByte((int16_t)heaterTemp[j]*10);
+        sentBuffer[2+2*j] = lowByte((int16_t)heaterTemp[j]*10);
       }
       Wire.write(sentBuffer, (1 + 2*numHeaters));
     }
@@ -546,8 +538,13 @@ void writeData() {
       byte sentBuffer[1 + 32*numHeaters];
       sentBuffer[0] = boolArrayToByte(statusArray);
       for (j = 0; j < numHeaters; j++) {
-        sentBuffer[1+2*j] = highByte((int16_t)heaterTemp[j]);
-        sentBuffer[2+2*j] = lowByte((int16_t)heaterTemp[j]);
+        sentBuffer[1+2*j] = highByte((int16_t)heaterTemp[j]*10);
+        sentBuffer[2+2*j] = lowByte((int16_t)heaterTemp[j]*10);
+        sentBuffer[3+2*j] = 6;
+        sentBuffer[4+2*j] = 4;
+        sentBuffer[5+2*j] = 7;
+        sentBuffer[6+2*j] = 2;
+        /*
         sentBuffer[9+30*j] = startTimeHb;
         sentBuffer[10+30*j] = startTimeLb;
         sentBuffer[11+30*j] = startTempHb[j];
@@ -578,8 +575,10 @@ void writeData() {
         sentBuffer[36+30*j] = cycleCompleteTempLb[j];
         sentBuffer[37+30*j] = cycleCompletePosHb[j];
         sentBuffer[38+30*j] = cycleCompletePosLb[j];
+        */
       }
-      Wire.write(sentBuffer, (9 + 30*numHeaters));
+      //Wire.write(sentBuffer, (9 + 30*numHeaters));
+      Wire.write(sentBuffer, 7);
     }
   }
 }
@@ -587,20 +586,21 @@ void writeData() {
 // Convert Bool array to Byte
 byte boolArrayToByte(bool boolArray[8]){
   byte result = 0;
-  for(int i = 0; i < 8; i++)
-  {
-    if(boolArray[i])
-    {
-      result = result | (1 << i);
-    }
-  }
+  if (boolArray[0]) result = result + 1;
+  if (boolArray[1]) result = result + 2;
+  if (boolArray[2]) result = result + 4;
+  if (boolArray[3]) result = result + 8;
+  if (boolArray[4]) result = result + 16;
+  if (boolArray[5]) result = result + 32;
+  if (boolArray[6]) result = result + 64;
+  if (boolArray[7]) result = result + 128;
   return result;
 }
 
 // Fault Handling function that reads active faults and sends out the appropriate fault M_2_S_Message.
 void faultHandling(bool faultsActiveArray[]) {
   if (fltResetSig) { // Resets faults
-    Fill_With(faultsActiveArray, 15, false);
+    (faultsActiveArray, 15, false);
     fltsPresent = false;
   } // End of fault reset
   char* Fault_Messages [] = {
@@ -621,42 +621,17 @@ void faultHandling(bool faultsActiveArray[]) {
     "Fault15: Flash Cycle Failed. Punch/Press Not Releasing."
   }; //
   if (fltsPresent) { // If faults are present, Heat is disabled, Cycle is aborted.
-    cycleCodes[0] = "FA";
-    Serial.print('Faults Active');
+    Serial.print("Faults Active ");
     heatEnable = false;
     cycleActive = false;
-    Fill_With(processFlags, 20, false);
-    Fill_With(atMeltTemp, numHeaters, false);
-    Fill_With(heatersRdyForRelease, numHeaters, false);
+    fillWith(processFlags, 20, false);
+    fillWith(atMeltTemp, numHeaters, false);
+    fillWith(heatersRdyForRelease, numHeaters, false);
     for (j = 0; j < numHeaters; j++) {
       digitalWrite(heaterPowerPinArray[j], LOW); // Physically removes power to heaters as safeguard.
     }
   }
 } // End of faultHandling
-
-
-
-/*
-  This interrupt serves as the cycle timing clock. It is reset using a PB on the LCD.
-  The interrupt happens every five msec.
- */
-
-void Heater_Duty(){
-  if (dutyPulseValue < pulsePeriod){
-    ++dutyPulseValue;
-  }
-  else{
-    dutyPulseValue = 0;
-    for (j = 0; j < numHeaters; j++){
-      digitalWrite(heaterPowerPinArray[j], HIGH);
-    }
-  }
-  for (j = 0; j < numHeaters; j++){
-    if (dutyPulseValue >= heaterOnDutyArray[j]){
-      digitalWrite(heaterPowerPinArray[j], LOW);
-    }
-  }
-} // End of Heater_Duty
 
 // This turns on cooling air whenever the LMP is above a safe temperature
 void lmpCoolingAir() {
@@ -678,30 +653,39 @@ void lmpCoolingAir() {
 void PID_Heater_Control() {
   if (flashCycleHeat == 0) {
     if (heatEnable && !fltsPresent && cycleActive/* &&
-    (!lmpActuation || (lmpActuation && !punchFullStrokeSig[j]))*/) { // Only performs PID calculation if heat is enabled and no faults are present.
-      heater1PID.Compute();
-      heater2PID.Compute();
-      heater3PID.Compute();
-      heater4PID.Compute();
-    }
-    else {
-      Fill_With(heaterOnDutyArray, numHeaters, 0.0);
-      heatEnable = false;
-    }
-  }
-  else if (flashCycleHeat == 1) {
-    for (j = 0; j < numHeaters; j++) {
-      if (flashCycleTargetHeaters[j]) {heaterOnDutyArray[j] = pidOutputMax;}
-      else {
-        heaterOnDutyArray[j] = 0.0;
-        heatEnable = false;
-      }
-    }
-  }
-  else if (flashCycleHeat == 2) {
-    Fill_With(heaterOnDutyArray, numHeaters, 0.0);
-    heatEnable = false;
-  }
+      (!lmpActuation || (lmpActuation && !punchFullStrokeSig[j]))*/) { // Only performs PID calculation if heat is enabled and no faults are present.
+      heaterOnDutyArray[0] = (heaterMeltTemp - heaterTemp[0])*.5;
+      if (heaterOnDutyArray[0] > 255) heaterOnDutyArray[0] = 255;
+      else if (heaterOnDutyArray[0] < 0) heaterOnDutyArray[0] = 0;
+     //heater1PID.Compute();
+     //heater2PID.Compute();
+    // heater3PID.Compute();
+    // heater4PID.Compute();
+   }
+   else {
+     for (j = 0; j < numHeaters; j++) {
+       heaterOnDutyArray[j] = 0;
+     }
+     heatEnable = false;
+   }
+ }
+ else if (flashCycleHeat == 1) {
+   for (j = 0; j < numHeaters; j++) {
+     if (flashCycleTargetHeaters[j]) {heaterOnDutyArray[j] = pidOutputMax;}
+     else {
+       heaterOnDutyArray[j] = 0.0;
+       heatEnable = false;
+     }
+   }
+   }
+   else if (flashCycleHeat == 2) {
+     for (j = 0; j < numHeaters; j++) {
+       heaterOnDutyArray[j] = 0;
+     }
+     heatEnable = false;
+   }
+   Serial.print(heaterOnDutyArray[0]);
+   Serial.print(" ");
 } // End of PID_Heater_Control
 
 /*
@@ -720,7 +704,7 @@ void flashCycle() {
       flashCycleHeat = 1; // flashCycleHeat = 1 means heat is forced on
       flashCycleStep = 1; // Move to second step
       if (!lmpActuation) { // If no punch actuation, turn on all heaters and extend press
-        Fill_With(flashCycleTargetHeaters, numHeaters, true);
+        fillWith(flashCycleTargetHeaters, numHeaters, true);
         extendPress = true; // Extend press if no punch actuation
       }
       else if (lmpActuation) { // If punch actuation, turn only stuck heaters on and extend punches
@@ -735,8 +719,8 @@ void flashCycle() {
     // If second step is active and flash time has been exceeded, proceed.
     else if (flashCycleStep == 1 && (currentCycleTime >= flashCycleStartTime + flashTime)) {
       flashCycleHeat = 2; // flashCycleHeat = 2 means heat is forced off
-      Fill_With(flashCycleTargetHeaters, numHeaters, false); // Turn off heater
-      Fill_With(punchExtend, numHeaters, false); // Retract punch if punch actuation
+      fillWith(flashCycleTargetHeaters, numHeaters, false); // Turn off heater
+      fillWith(punchExtend, numHeaters, false); // Retract punch if punch actuation
       if (!lmpActuation) {
         extendPress = false; // Retract press if no punch actuation
       }
@@ -745,7 +729,7 @@ void flashCycle() {
     }
     // If third step is active and pulloff time has not been exceeded, check for
     // successful release.
-    else if (flashCycleStep == 2 && !flashSuccess && (currentCycleTime <= flashCycleReleaseTime + puloffTime)) {
+    else if (flashCycleStep == 2 && !flashSuccess && (currentCycleTime <= flashCycleReleaseTime + pulloffTime)) {
       if (lmpActuation) {
         flashSuccess = true;
         for (j = 0; j < numHeaters; j++) {
@@ -756,16 +740,15 @@ void flashCycle() {
     }
     // If third step is active and pulloff time has been exceeded and flash cycle
     // was successfully completed, cycle is complete, end cycle.
-    else if (flashCycleStep == 2 && !cycleComplete && (currentCycleTime > flashCycleReleaseTime + puloffTime)) {
+    else if (flashCycleStep == 2 && !cycleComplete && (currentCycleTime > flashCycleReleaseTime + pulloffTime)) {
       if (flashSuccess) {
         flashCycleStep = 0;
         currentFlashCycle = 1;
         cycleActive = false;
         cycleCompleteTime = currentCycleTime;
         cycleComplete = true;
-        cycleCodes[0] = "CC";
         extendPress = false;
-        Fill_With(heatersRdyForRelease, numHeaters, false);
+        fillWith(heatersRdyForRelease, numHeaters, false);
         allHeatersReadyRelease = false;
         processFlags[13] = true;
         flashCycleHeat = 0;
@@ -787,15 +770,18 @@ void flashCycle() {
 
 void homeSystem() {
   // Re-Initialize system for next cycle
-  Fill_With(punchExtend, numHeaters, false);
-  Fill_With(atMeltTemp, numHeaters, false);
-  Fill_With(processFlags, 20, false);
-  Fill_With(heatersRdyForRelease, numHeaters, false);
-  Fill_With(flashCycleTargetHeaters, numHeaters, false);
-  Fill_With(heaterContactDipMin, numHeaters, 0.0);
-  Fill_With(heaterContactDipTime, numHeaters, 0.0);
+  fillWith(punchExtend, numHeaters, false);
+  fillWith(atMeltTemp, numHeaters, false);
+  fillWith(processFlags, 20, false);
+  fillWith(heatersRdyForRelease, numHeaters, false);
+  fillWith(flashCycleTargetHeaters, numHeaters, false);
+  fillWith(heaterContactDipMin, numHeaters, 0.0);
+  for (j = 0; j < numHeaters; j++) {
+    heaterContactDipTime[j] = 0;
+  }
   allHeatersReadyRelease = false;
   extendPress = false;
+  setpointFlag = true;
   //coolingAirEnable = false;
   currentFlashCycle = 1;
   flashCycleHeat = 0;
@@ -810,32 +796,32 @@ void homeSystem() {
 // Logs Cycle data at the end of each cycle to the in-board SD card.
 void logData() {
   for (j = 0; j < numHeaters; j++) {
-    startTimeHb = highByte((int16_t)(heatersOnTime*100));
-    startTimeLb = lowByte((int16_t)(heatersOnTime*100));
+    startTimeHb = 0;
+    startTimeLb = 0;
     startTempHb[j] = highByte((int16_t)(heaterStartTemp[j]*10));
     startTempLb[j] = lowByte((int16_t)(heaterStartTemp[j]*10));
     startPosHb[j] = 0;
     startPosLb[j] = 0;
-    atSetpointTimeHb[j] = highByte((int16_t)(meltTempReachedTime[j]*100));
-    atSetpointTimeLb[j] = lowByte((int16_t)(meltTempReachedTime[j]*100));
+    atSetpointTimeHb[j] = highByte(meltTempReachedTime[j]);
+    atSetpointTimeLb[j] = lowByte(meltTempReachedTime[j]);
     atSetpointTempHb[j] = highByte((int16_t)(atSetpointTemp[j]*10));
     atSetpointTempLb[j] = lowByte((int16_t)(atSetpointTemp[j]*10));
     atSetpointPosHb[j] = 0;
     atSetpointPosLb[j] = 0;
-    contactDipTimeHb[j] = highByte((int16_t)(heaterContactDipTime[j]*100));
-    contactDipTimeLb[j] = lowByte((int16_t)(heaterContactDipTime[j]*100));
+    contactDipTimeHb[j] = highByte(heaterContactDipTime[j]);
+    contactDipTimeLb[j] = lowByte(heaterContactDipTime[j]);
     contactDipTempHb[j] = highByte((int16_t)(heaterContactDipMin[j]*100));
     contactDipTempLb[j] = lowByte((int16_t)(heaterContactDipMin[j]*100));
     contactDipPosHb[j] = 0;
     contactDipPosLb[j] = 0;
-    fullStrokeTimeHb[j] = highByte((int16_t)(fullStrokeTime[j]*100));
-    fullStrokeTimeLb[j] = lowByte((int16_t)(fullStrokeTime[j]*100));
+    fullStrokeTimeHb[j] = highByte(fullStrokeTime[j]);
+    fullStrokeTimeLb[j] = lowByte(fullStrokeTime[j]);
     heaterTempAtShutoffHb[j] = highByte((int16_t)(heaterTempAtShutoff[j]*10));
     heaterTempAtShutoffLb[j] = lowByte((int16_t)(heaterTempAtShutoff[j]*10));
     heaterPosAtShutoffHb[j] = 0;
     heaterPosAtShutoffLb[j] = 0;
-    cycleCompleteTimeHb[j] = highByte((int16_t)(cycleCompleteTime*100));
-    cycleCompleteTimeLb[j] = lowByte((int16_t)(cycleCompleteTime*100));
+    cycleCompleteTimeHb[j] = highByte(cycleCompleteTime);
+    cycleCompleteTimeLb[j] = lowByte(cycleCompleteTime);
     cycleCompleteTempHb[j] = highByte((int16_t)(cycleCompleteTemp[j]*10));
     cycleCompleteTempLb[j] = lowByte((int16_t)(cycleCompleteTemp[j]*10));
     cycleCompletePosHb[j] = 0;
