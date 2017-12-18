@@ -88,7 +88,7 @@ bool coolingAirEnable;
 bool cycleActive;
 bool cycleComplete;
 bool cycleStopSignal;
-bool extendPress = true;
+bool extendPress;
 bool faultsActiveArray[15] = {};
 bool fltCoolingAirActive;
 bool fltsPresent;
@@ -183,7 +183,7 @@ void setup() {
 
   //fill default RTD ambient analog values
   //equation is Aamb = Afs*Ramb/(Rref+Ramb)
-  fillWith(rtdAmbientAn, numHeaters, (uint16_t)306); //default value
+  fillWith(rtdAmbientAn, numHeaters, (uint16_t)320); //default value
 
   // Start Serial
   Serial.begin(115200);
@@ -240,7 +240,7 @@ void loop() {
 
     if (heaterTemp[j] > heaterPeakTemp[j]) { // Tracks peak temp and timestamp for each heater
       heaterPeakTemp[j] = heaterTemp[j];
-      //heaterPeakTempTime[j] = currentCycleTime;
+      heaterPeakTempTime[j] = currentCycleTime;
     }
 
     if (lmpActuation) { // Tracks punch full stroke signals if punch actuation
@@ -272,6 +272,7 @@ void loop() {
     fltsPresent = true;
     faultsActiveArray[13] = true;
     cycleActive = false;
+    Serial.print("Cycle too long");
   }
 
   /*
@@ -306,31 +307,23 @@ void loop() {
       for (j = 0; j < numHeaters; j++) heaterStartTemp[j] = heaterTemp[j];
       processFlags[1] = true; // Functions as a one-shot to ensure that Heaters_On-Time is only captured once.
     }
-
     for (k = 0; k < numHeaters; k++) {
       if (heaterTemp[k] > heaterHiLim) { // If any heater exceeds hi-lim, exit cycle and trigger fault.
         heatEnable = false;
         fltsPresent = true;
         faultsActiveArray[numHeaters + k] = true;
         cycleActive = false;
-        Serial.print("too hot ");
-        Serial.print(heaterTemp[0]);
-        Serial.print(" ");
-        Serial.print(heaterRtdAnalogSig[0]);
+        Serial.print("too hot");
       }
-
       // When a heater reaches setpoint, flag it and capture time
       else if (!fltsPresent && (heaterTemp[k] > heaterMeltTemp) && !atMeltTemp[k]) {
-        Serial.print(" I happened ");
         atMeltTemp[k] = true;
         setpointFlag = true;
         atSetpointTemp[k] = heaterTemp[k];
         meltTempReachedTime[k] = currentCycleTime; // Captures the first cycle time at which all heaters are within setpoint window.
         if(setpointFlag && k == numHeaters-1) allAtMeltTemp = true;
       }
-
       else setpointFlag = false;
-
       if (!atMeltTemp[k]) allAtMeltTemp = false;
     }
 
@@ -340,12 +333,13 @@ void loop() {
       fltsPresent = true;
       faultsActiveArray[numHeaters*3] = true;
       cycleActive = false;
+      Serial.print("Heaters on too long");
     }
     // When all heaters are at setpoint, extend press.
     if (allAtMeltTemp && !processFlags[2]) {
-      Serial.print("At Setpoint");
       extendPress = true;
       processFlags[2] = true;
+      Serial.print("At Setpoint");
     }
   }
 
@@ -382,7 +376,6 @@ void loop() {
     if (pressFullStrokeReached && punchFullStrokeSig[j] && !processFlags[7]) {
       if ((!fltsPresent && cycleActive) || (fltCoolingAirActive)) {
         heatEnable = false;
-        //coolingAirEnable = true;
         processFlags[7] = true;
         Serial.print("Cooling Air On");
       }
@@ -395,18 +388,16 @@ void loop() {
   * When all heaters are ready for release, if no actuation, tell press to retract.
   * If punch actuation, instead tell all punches to retract.
   */
-  if (((coolingAirEnable && pressFullStrokeReached && punchesAtFullStroke && !fltsPresent && cycleActive) ||
-  (fltsPresent && !cycleActive && fltCoolingAirActive)) && !heatEnable && !processFlags[8]) {
+  if (((processFlags[7] && !fltsPresent && cycleActive) || (fltsPresent && !cycleActive && fltCoolingAirActive))
+  && !heatEnable && !processFlags[8]) {
     allHeatersReadyRelease = true;
     for (j = 0; j < numHeaters; j++) {
-      if (heaterTemp[j] > (releaseTemp + releaseHyst)) {
+      if (heaterTemp[j] > (releaseTemp)) {
         allHeatersReadyRelease = false;
       }
     }
-
     if (allHeatersReadyRelease) {
       heaterReleaseTime = currentCycleTime;
-      //coolingAirEnable = false;
       if (!lmpActuation) {extendPress = false;}
       if (lmpActuation) {fillWith(punchExtend, numHeaters, false);}
       processFlags[8] = true;
@@ -445,6 +436,7 @@ void loop() {
     fltsPresent = true;  // punches/press, flag fault and abort cycle.
     faultsActiveArray[14] = true;
     cycleActive = false;
+    Serial.print("flash cycle failure");
   }
 
   // Cycle Stop logic
@@ -516,8 +508,8 @@ void readData() {
 }
 
 void writeData() {
-  bool statusArray[8] = {cycleActive, allAtMeltTemp, allHeatersReadyRelease,
-    cycleComplete, fltsPresent, cycleDataLogged, afi, afi};
+  bool statusArray[8] = {cycleActive, allAtMeltTemp, coolingAirEnable,
+    allHeatersReadyRelease, cycleComplete, fltsPresent, cycleDataLogged, afi};
   if (sendMappingData) {
     char sentBuffer[4] = "0000";
     //for (j = 0; j < 4; j++) {sentBuffer[j] = lmpTypes[j];}
@@ -598,9 +590,12 @@ byte boolArrayToByte(bool boolArray[8]){
 }
 
 // Fault Handling function that reads active faults and sends out the appropriate fault M_2_S_Message.
-void faultHandling(bool faultsActiveArray[]) {
-  if (fltResetSig) { // Resets faults
-    (faultsActiveArray, 15, false);
+void faultHandling(bool faultsArray[]) {
+  for (j = 0; j < 15; j++) {
+    if (faultsArray[j]) Serial.print(j);
+  }
+  if (cycleStopSignal) { // Resets faults
+    fillWith(faultsArray, 15, false);
     fltsPresent = false;
   } // End of fault reset
   char* Fault_Messages [] = {
@@ -627,9 +622,6 @@ void faultHandling(bool faultsActiveArray[]) {
     fillWith(processFlags, 20, false);
     fillWith(atMeltTemp, numHeaters, false);
     fillWith(heatersRdyForRelease, numHeaters, false);
-    for (j = 0; j < numHeaters; j++) {
-      digitalWrite(heaterPowerPinArray[j], LOW); // Physically removes power to heaters as safeguard.
-    }
   }
 } // End of faultHandling
 
@@ -684,8 +676,6 @@ void PID_Heater_Control() {
      }
      heatEnable = false;
    }
-   Serial.print(heaterOnDutyArray[0]);
-   Serial.print(" ");
 } // End of PID_Heater_Control
 
 /*
