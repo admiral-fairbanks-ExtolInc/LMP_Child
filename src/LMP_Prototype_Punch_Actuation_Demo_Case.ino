@@ -10,6 +10,7 @@
 */
 #include <FlexiTimer2.h>
 #include <Wire.h>
+#include <EEPROM.h>
 #include "fillWithTemplate.h" // Template function for filling arrays
 #include "lmpFunctions.h"
 
@@ -23,6 +24,10 @@ const uint8_t numHeaters = 1;
 const uint8_t pulsePeriod = 49;
 const uint8_t statusLED = 5;
 const uint16_t maxEnergy = 25600;
+const uint16_t meltTempMemAddr = 0;
+const uint16_t releaseTempMemAddr = 2;
+const uint16_t heaterOnTimeMemAddr = 4;
+const uint16_t dwellTimeMemAddr = 6;
 const int Safe_Temp = 150, Safe_Hysteresis = 5;
 
 const bool afi = false;
@@ -51,12 +56,12 @@ uint16_t heatersOnTime;
 uint16_t pidOutputMax = 255;
 uint16_t heaterOnDutyArray[numHeaters] = {};
 uint16_t lmpEnergy[numHeaters] = {};
-uint16_t releaseTemp = 125;
+uint16_t releaseTemp;
 uint16_t meltTempHyst = 10;
 uint16_t heaterHiLim = 1000;
-uint16_t openLoopHeaterOnTime = 30000;
-uint16_t dwellTime = 0;
-uint16_t heaterMeltTemp = 550;
+uint16_t openLoopHeaterOnTime;
+uint16_t dwellTime;
+uint16_t heaterMeltTemp;
 uint16_t heaterTemp[numHeaters] = {};
 
 int heaterPeakTemp[numHeaters] = {};
@@ -176,6 +181,22 @@ void setup() {
   //pinMode(heaterIndPinArray[1], OUTPUT);
   //digitalWrite(heaterIndPinArray[1], LOW);
   if (maxFlashCycles < 0) {maxFlashCycles = 0;} // Quick check for invalid Max Flash Cycles parameter
+
+  EEPROM.get(meltTempMemAddr, heaterMeltTemp);
+  EEPROM.get(releaseTempMemAddr, releaseTemp);
+  EEPROM.get(heaterOnTimeMemAddr, openLoopHeaterOnTime);
+  EEPROM.get(dwellTimeMemAddr, dwellTime);
+
+  if (heaterMeltTemp == 65535) heaterMeltTemp = 550;
+  if (releaseTemp == 65535) releaseTemp = 150;
+  if (openLoopHeaterOnTime == 65535) openLoopHeaterOnTime = 30;
+  if (dwellTime == 65535) dwellTime = 0;
+
+  Serial.println(heaterMeltTemp);
+  Serial.println(releaseTemp);
+  Serial.println(openLoopHeaterOnTime);
+  Serial.println(dwellTime);
+
 
 } // End of Setup Loop
 
@@ -403,7 +424,7 @@ void loop() {
   }
 
   // Data Logging only happens at end of loop if Cycle is complete or if a fault was flagged on this scan.
-  if (!cycleActive && !cycleDataLogged/* && (cycleComplete || fltsPresent || cycleStopSignal)*/) {
+  if (!cycleActive && !cycleDataLogged && (cycleComplete || fltsPresent || cycleStopSignal)) {
     logData();
     if (!systemHomed) homeSystem();
   }
@@ -479,26 +500,30 @@ void readData() {
     maxOnTimeUnion.array[0] = receivedBuffer[10];
     dwellTimeUnion.array[1] = receivedBuffer[11];
     dwellTimeUnion.array[0] = receivedBuffer[12];
-    if (heaterMeltTemp != (double)meltTempUnion.integer) {
+    if (heaterMeltTemp != meltTempUnion.integer) {
       heaterMeltTemp = meltTempUnion.integer;
+      EEPROM.put(meltTempMemAddr, heaterMeltTemp);
       Serial.print("Melt Temp Updated: ");
       Serial.print(heaterMeltTemp);
       Serial.print(" deg F");
     }
-    if (releaseTemp != (double)releaseTempUnion.integer) {
+    if (releaseTemp != releaseTempUnion.integer) {
       releaseTemp = releaseTempUnion.integer;
+      EEPROM.put(releaseTempMemAddr, releaseTemp);
       Serial.print("Release Temp Updated: ");
       Serial.print(releaseTemp);
       Serial.print(" deg F");
     }
-    if (openLoopHeaterOnTime != (double)maxOnTimeUnion.integer) {
+    if (openLoopHeaterOnTime != maxOnTimeUnion.integer) {
       openLoopHeaterOnTime = maxOnTimeUnion.integer*100;
+      EEPROM.put(heaterOnTimeMemAddr, openLoopHeaterOnTime);
       Serial.print("Max Heater On Time Updated: ");
       Serial.print(openLoopHeaterOnTime);
       Serial.print(" msec");
     }
     if (dwellTime != dwellTimeUnion.integer) {
       dwellTime = dwellTimeUnion.integer*100;
+      EEPROM.put(dwellTimeMemAddr, dwellTime);
       Serial.print("Dwell Time Updated: ");
       Serial.print(dwellTime);
       Serial.print(" msec");
