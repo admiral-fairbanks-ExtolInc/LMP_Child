@@ -7,6 +7,8 @@ double rtdTempConversion(uint16_t aIn, uint16_t aInAmbient) {
 
   rtdRes = refRes/(analogFullScale/aIn - 1.0);
   rtdResAmbient = refRes/(analogFullScale/aInAmbient - 1.0);
-  if ((rtdTempFactor*(rtdRes/rtdResAmbient - 1.0) + lmpAmbTemp) < 0) return 0;
+  if ((rtdTempFactor*(rtdRes/rtdResAmbient - 1.0) + lmpAmbTemp) < 0) {
+    return 0;
+  }
   else return (rtdTempFactor*(rtdRes/rtdResAmbient - 1.0) + lmpAmbTemp);
 } // End of RTD_Temp_Conversion

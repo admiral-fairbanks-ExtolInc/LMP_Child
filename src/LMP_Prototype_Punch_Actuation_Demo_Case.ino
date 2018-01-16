@@ -28,7 +28,8 @@ const uint16_t meltTempMemAddr = 0;
 const uint16_t releaseTempMemAddr = 2;
 const uint16_t heaterOnTimeMemAddr = 4;
 const uint16_t dwellTimeMemAddr = 6;
-const int Safe_Temp = 150, Safe_Hysteresis = 5;
+const uint16_t useNewSettingsMemAddr = 8;
+const uint16_t safeTemp = 250, safeHysteresis = 5;
 
 const bool afi = false;
 const bool ati = true;
@@ -46,7 +47,7 @@ uint16_t fullStrokeTime[numHeaters] = {};
 uint16_t heaterPeakTempTime[numHeaters] = {};
 uint16_t heaterRetractedTime[numHeaters] = {};
 uint16_t maxOverallCycleTime = 30000;
-uint16_t pulloffTime = 2500;
+uint16_t pulloffTime = 5000;
 uint16_t meltTempReachedTime[numHeaters] = {};
 uint16_t flashCycleReleaseTime;
 uint16_t flashCycleStartTime;
@@ -76,7 +77,6 @@ unsigned long currentSnapshot;
 unsigned long ledBlinkStart;
 unsigned long ledBlinkLength = 1000;
 
-bool All_Safe = true;
 bool setpointFlag;
 bool setpointCheck = false;
 bool resetSystemTimerCntr;
@@ -112,6 +112,7 @@ bool ledOnOff;
 bool cycleStopSignal;
 bool pressFullStrokeReached = false;
 bool biasCalculated;
+bool useNewSettings = false;
 
 double heaterTempAtRelease[numHeaters] = {};
 double heaterTempAtShutoff[numHeaters] = {};
@@ -160,7 +161,7 @@ void setup() {
 
   //fill default RTD ambient analog values
   //equation is Aamb = Afs*Ramb/(Rref+Ramb)
-  fillWith(rtdAmbientAn, numHeaters, (uint16_t)301); //default value
+  fillWith(rtdAmbientAn, numHeaters, (uint16_t)474); //default value
 
   // Start Serial
   Serial.begin(115200);
@@ -182,15 +183,19 @@ void setup() {
   //digitalWrite(heaterIndPinArray[1], LOW);
   if (maxFlashCycles < 0) {maxFlashCycles = 0;} // Quick check for invalid Max Flash Cycles parameter
 
-  EEPROM.get(meltTempMemAddr, heaterMeltTemp);
-  EEPROM.get(releaseTempMemAddr, releaseTemp);
-  EEPROM.get(heaterOnTimeMemAddr, openLoopHeaterOnTime);
-  EEPROM.get(dwellTimeMemAddr, dwellTime);
+  EEPROM.get(useNewSettingsMemAddr, useNewSettings);
 
-  if (heaterMeltTemp == 65535) heaterMeltTemp = 550;
-  if (releaseTemp == 65535) releaseTemp = 150;
-  if (openLoopHeaterOnTime == 65535) openLoopHeaterOnTime = 30;
-  if (dwellTime == 65535) dwellTime = 0;
+  if (useNewSettings) heaterMeltTemp = 550;
+  else EEPROM.get(meltTempMemAddr, heaterMeltTemp);
+
+  if (useNewSettings) releaseTemp = 150;
+  else EEPROM.get(releaseTempMemAddr, releaseTemp);
+
+  if (useNewSettings) openLoopHeaterOnTime = 30;
+  else EEPROM.get(heaterOnTimeMemAddr, openLoopHeaterOnTime);
+
+  if (useNewSettings) dwellTime = 0;
+  else EEPROM.get(dwellTimeMemAddr, dwellTime);
 
   Serial.println(heaterMeltTemp);
   Serial.println(releaseTemp);
@@ -503,6 +508,7 @@ void readData() {
     if (heaterMeltTemp != meltTempUnion.integer) {
       heaterMeltTemp = meltTempUnion.integer;
       EEPROM.put(meltTempMemAddr, heaterMeltTemp);
+      EEPROM.put(useNewSettingsMemAddr, true);
       Serial.print("Melt Temp Updated: ");
       Serial.print(heaterMeltTemp);
       Serial.print(" deg F");
@@ -510,6 +516,7 @@ void readData() {
     if (releaseTemp != releaseTempUnion.integer) {
       releaseTemp = releaseTempUnion.integer;
       EEPROM.put(releaseTempMemAddr, releaseTemp);
+      EEPROM.put(useNewSettingsMemAddr, true);
       Serial.print("Release Temp Updated: ");
       Serial.print(releaseTemp);
       Serial.print(" deg F");
@@ -517,6 +524,7 @@ void readData() {
     if (openLoopHeaterOnTime != maxOnTimeUnion.integer) {
       openLoopHeaterOnTime = maxOnTimeUnion.integer*100;
       EEPROM.put(heaterOnTimeMemAddr, openLoopHeaterOnTime);
+      EEPROM.put(useNewSettingsMemAddr, true);
       Serial.print("Max Heater On Time Updated: ");
       Serial.print(openLoopHeaterOnTime);
       Serial.print(" msec");
@@ -524,6 +532,7 @@ void readData() {
     if (dwellTime != dwellTimeUnion.integer) {
       dwellTime = dwellTimeUnion.integer*100;
       EEPROM.put(dwellTimeMemAddr, dwellTime);
+      EEPROM.put(useNewSettingsMemAddr, true);
       Serial.print("Dwell Time Updated: ");
       Serial.print(dwellTime);
       Serial.print(" msec");
@@ -618,11 +627,12 @@ void faultHandling(bool faultsArray[]) {
 
 // This turns on cooling air whenever the LMP is above a safe temperature
 void lmpCoolingAir() {
+  bool All_Safe = true;
   for (j = 0; j < numHeaters; j++) {
-    if (!heatEnable && (heaterTemp[j] > (Safe_Temp + Safe_Hysteresis) || heaterTemp[j] > (releaseTemp + releaseHyst))) {
+    if (!heatEnable && (heaterTemp[j] > (safeTemp + safeHysteresis) || heaterTemp[j] > (releaseTemp + releaseHyst))) {
       coolingAirEnable = true;
     }
-    if (heaterTemp[j] > (Safe_Temp - Safe_Hysteresis) || heaterTemp[j] > (releaseTemp - releaseHyst)) All_Safe = false;
+    if (heaterTemp[j] > (safeTemp - safeHysteresis) || heaterTemp[j] > (releaseTemp - releaseHyst)) All_Safe = false;
   }
   if (heatEnable || All_Safe) coolingAirEnable = false;
 } // End lmpCoolingAir
@@ -645,12 +655,14 @@ void pidHeaterControl() {
           else if (heaterOnDutyArray[j] < 0) heaterOnDutyArray[j] = 0;
         }
         lmpEnergy[j] = heaterOnDutyArray[j] + lmpEnergy[j];
+        /*
         if (lmpEnergy[j] >= maxEnergy) {
           fltsPresent = true;
           heatEnable = false;
           cycleActive = false;
           Serial.println("exceeded max allowable energy");
         }
+        */
       }
     }
   }
@@ -820,8 +832,8 @@ void logData() {
     atSetpointTempLb[j] = lowByte((int16_t)(atSetpointTemp[j]*10));
     contactDipTimeHb[j] = highByte(heaterContactDipTime[j]);
     contactDipTimeLb[j] = lowByte(heaterContactDipTime[j]);
-    contactDipTempHb[j] = highByte((int16_t)(heaterContactDipMin[j]*100));
-    contactDipTempLb[j] = lowByte((int16_t)(heaterContactDipMin[j]*100));
+    contactDipTempHb[j] = highByte((int16_t)(heaterContactDipMin[j]*10));
+    contactDipTempLb[j] = lowByte((int16_t)(heaterContactDipMin[j]*10));
     fullStrokeTimeHb[j] = highByte(fullStrokeTime[j]);
     fullStrokeTimeLb[j] = lowByte(fullStrokeTime[j]);
     heaterTempAtShutoffHb[j] = highByte((int16_t)(heaterTempAtShutoff[j]*10));
