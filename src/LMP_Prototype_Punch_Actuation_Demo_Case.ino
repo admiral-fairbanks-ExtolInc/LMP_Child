@@ -55,15 +55,15 @@ uint16_t heaterContactDipTime[numHeaters];
 uint16_t heaterReleaseTime;
 uint16_t heatersOnTime;
 uint16_t pidOutputMax = 255;
-uint16_t heaterOnDutyArray[numHeaters] = {};
+int16_t heaterOnDutyArray[numHeaters] = {};
 uint16_t lmpEnergy[numHeaters] = {};
 uint16_t releaseTemp;
 uint16_t meltTempHyst = 10;
-uint16_t heaterHiLim = 1000;
+uint16_t heaterHiLim = 800;
 uint16_t openLoopHeaterOnTime;
 uint16_t dwellTime;
-uint16_t heaterMeltTemp;
-uint16_t heaterTemp[numHeaters] = {};
+int16_t heaterMeltTemp;
+int16_t heaterTemp[numHeaters] = {};
 
 int heaterPeakTemp[numHeaters] = {};
 int currentFlashCycle = 1;
@@ -161,7 +161,7 @@ void setup() {
 
   //fill default RTD ambient analog values
   //equation is Aamb = Afs*Ramb/(Rref+Ramb)
-  fillWith(rtdAmbientAn, numHeaters, (uint16_t)474); //default value
+  fillWith(rtdAmbientAn, numHeaters, (uint16_t)301); //test press rtd val = 301
 
   // Start Serial
   Serial.begin(115200);
@@ -179,8 +179,6 @@ void setup() {
   // End of I/O Initialization
 
   pinMode(statusLED, OUTPUT);
-  //pinMode(heaterIndPinArray[1], OUTPUT);
-  //digitalWrite(heaterIndPinArray[1], LOW);
   if (maxFlashCycles < 0) {maxFlashCycles = 0;} // Quick check for invalid Max Flash Cycles parameter
 
   EEPROM.get(useNewSettingsMemAddr, useNewSettings);
@@ -191,17 +189,18 @@ void setup() {
   if (useNewSettings) releaseTemp = 150;
   else EEPROM.get(releaseTempMemAddr, releaseTemp);
 
-  if (useNewSettings) openLoopHeaterOnTime = 30;
+  if (useNewSettings) openLoopHeaterOnTime = 30000;
   else EEPROM.get(heaterOnTimeMemAddr, openLoopHeaterOnTime);
 
   if (useNewSettings) dwellTime = 0;
   else EEPROM.get(dwellTimeMemAddr, dwellTime);
 
+  /*
   Serial.println(heaterMeltTemp);
   Serial.println(releaseTemp);
   Serial.println(openLoopHeaterOnTime);
   Serial.println(dwellTime);
-
+  */
 
 } // End of Setup Loop
 
@@ -232,8 +231,7 @@ void loop() {
 
   punchesAtFullStroke = true;
   for (j = 0; j < numHeaters; j++) {
-    heaterTemp[j] = rtdTempConversion(analogRead(14 + j), rtdAmbientAn[j]);
-
+    heaterTemp[j] = rtdTempConversion(analogRead(16 + j), rtdAmbientAn[j]);
     if (heaterTemp[j] > heaterPeakTemp[j]) { // Tracks peak temp and timestamp for each heater
       heaterPeakTemp[j] = heaterTemp[j];
       heaterPeakTempTime[j] = currentCycleTime;
@@ -248,7 +246,7 @@ void loop() {
     faultsActiveArray[13] = true;
     cycleActive = false;
     Serial.println("Cycle too long");
-    Serial.println(currentCycleTime - cycleStartTime);
+    Serial.println(currentCycleTime);
   }
 
   // Cool Modules
@@ -261,7 +259,7 @@ void loop() {
   //Calibrate RTD
   if (calibrateRtd && !rtdCalibrated) {
     for (j = 0; j < numHeaters; j++) {
-      rtdAmbientAn[j] = analogRead(14 + j);
+      rtdAmbientAn[j] = analogRead(16 + j);
     }
     Serial.println("RTD Calibrated");
     rtdCalibrated = true;
@@ -283,9 +281,11 @@ void loop() {
   }
 
   if (heatEnable && !biasCalculated) {
-    biasRampTemp = pow((-0.0004167 * (float)heaterMeltTemp), 2) + 1.636*heaterMeltTemp - 123;
+    biasRampTemp = -0.0004167*(pow((float)heaterMeltTemp, 2)) + 1.636*heaterMeltTemp - 523; // last constant was 123, but was producing too hot of a number.
     biasSoakDuty = pow((float)heaterMeltTemp, 2)/15923567 + heaterMeltTemp/13850;
     biasCalculated = true;
+    Serial.println(biasRampTemp);
+    Serial.println(biasSoakDuty);
   }
 
   /*
@@ -321,11 +321,16 @@ void loop() {
       Serial.print("At Setpoint");
     }
   }
-  if (allAtMeltTemp && heatEnable) {
+  if (allAtMeltTemp && heatEnable && !pressFullStrokeReached) {
     for (j = 0; j < numHeaters; j++) {
-      if (heaterTemp[j] < heaterContactDipMin[j]) {
+      if (!heaterContactDipMin[j] && (heaterTemp[j] < atSetpointTemp[j])) {
+        //Serial.println("I happened!");
         heaterContactDipMin[j] = heaterTemp[j];
-        heaterContactDipTime[j] = (uint16_t)currentCycleTime;
+        heaterContactDipTime[j] = currentCycleTime;
+      }
+      else if (heaterTemp[j] < heaterContactDipMin[j]) {
+        heaterContactDipMin[j] = heaterTemp[j];
+        heaterContactDipTime[j] = currentCycleTime;
       }
     }
   }
@@ -349,11 +354,12 @@ void loop() {
         fullStrokeTime[j] = (uint16_t)currentCycleTime;
         heaterTempAtShutoff[j] = heaterTemp[j];
         atMeltTemp[j] = false;
+        allAtMeltTemp = false;
         processFlags[3 + j] = true;
         Serial.print("At Full Stroke");
+      }
     }
-}
-  // If all heaters are at full stroke (press/punch) disable heat and turn on cooling air.
+    // If all heaters are at full stroke (press/punch) disable heat and turn on cooling air.
     if (((pressFullStrokeReached && punchFullStrokeSig[j]) ||
     currentCycleTime > openLoopHeaterOnTime) &&
     (currentCycleTime - fullStrokeTime[j] >= dwellTime) && !processFlags[7]) {
@@ -434,9 +440,7 @@ void loop() {
     if (!systemHomed) homeSystem();
   }
   // Output Handling
-
-  for (j = 0; j < numHeaters; j++) {
-    analogWrite(heaterPowerPinArray[j], (int)heaterOnDutyArray[j]);
+  for(j = 0; j < numHeaters; j++) {
     digitalWrite(heaterIndPinArray[j], heatEnable);
   }
 
@@ -480,6 +484,7 @@ void readData() {
   ArrayToInteger releaseTempUnion;
   ArrayToInteger maxOnTimeUnion;
   ArrayToInteger dwellTimeUnion;
+  Serial.println(heaterOnDutyArray[0]);
   while (Wire.available()) {
     receivedBuffer[index] = Wire.read();
     ++index;
@@ -648,13 +653,17 @@ void pidHeaterControl() {
   if (flashCycleHeat == 0) {
     if (heatEnable && !fltsPresent && cycleActive) { // Only performs PID calculation if heat is enabled and no faults are present.
       for (j = 0; j < numHeaters; j++) {
-        if (heaterTemp[j] < biasRampTemp) heaterOnDutyArray[j] = 255;
+        if (heaterTemp[j] < biasRampTemp && !processFlags[2]) {
+          heaterOnDutyArray[j] = 255;
+        }
         else {
           heaterOnDutyArray[j] = ((heaterMeltTemp - heaterTemp[j])*.005 + biasSoakDuty) * 256;
-          if (heaterOnDutyArray[j] > 255) heaterOnDutyArray[j] = 255;
+          if (heaterOnDutyArray[j] > 255) {
+            heaterOnDutyArray[j] = 255;
+          }
           else if (heaterOnDutyArray[j] < 0) heaterOnDutyArray[j] = 0;
         }
-        lmpEnergy[j] = heaterOnDutyArray[j] + lmpEnergy[j];
+        //lmpEnergy[j] = heaterOnDutyArray[j] + lmpEnergy[j];
         /*
         if (lmpEnergy[j] >= maxEnergy) {
           fltsPresent = true;
@@ -664,6 +673,10 @@ void pidHeaterControl() {
         }
         */
       }
+    }
+    else {
+      int16_t fillNum = numHeaters, fillVal = 0;
+      fillWith(heaterOnDutyArray, fillNum, fillVal);
     }
   }
 
@@ -707,6 +720,10 @@ void pidHeaterControl() {
         heaterContactDipTime[j] = (uint16_t)currentCycleTime;
       }
     }
+  }
+
+  for (j = 0; j < numHeaters; j++) {
+    analogWrite(heaterPowerPinArray[j], heaterOnDutyArray[j]);
   }
 } // End of pidHeaterControl
 
